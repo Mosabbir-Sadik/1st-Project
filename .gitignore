@@ -1,0 +1,22 @@
+# Compiled binaries
+*.o
+*.exe
+*.dll
+*.so
+*.a
+ecommerce
+
+# IDE and editor files
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS-specific files
+.DS_Store
+Thumbs.db
+*.log
+
+# Data files (optional - remove comment if you want to track orders.txt)
+# orders.txt
