@@ -17,6 +17,7 @@
 #include <string.h>
 #include <stdlib.h>
 #include <ctype.h>
+#include <stdbool.h>
 
 /* =============================================================================
  * CONFIGURATION CONSTANTS
@@ -27,6 +28,17 @@
 #define MAX_PRODUCT_LENGTH  50
 #define MAX_STATUS_LENGTH   20
 #define DATA_FILE           "orders.txt"
+#define TEMP_BUFFER_LENGTH  128
+
+static const char *STATUS_OPTIONS[] = {
+    "Pending",
+    "Processing",
+    "Shipped",
+    "Delivered",
+    "Cancelled"
+};
+
+static const size_t STATUS_OPTION_COUNT = sizeof(STATUS_OPTIONS) / sizeof(STATUS_OPTIONS[0]);
 
 /* =============================================================================
  * DATA STRUCTURES
@@ -50,6 +62,7 @@ typedef struct {
 
 static Order orders[MAX_ORDERS];
 static int   orderCount = 0;
+static bool  hasUnsavedChanges = false;
 
 /* =============================================================================
  * FUNCTION PROTOTYPES
@@ -61,6 +74,7 @@ void displayOrders(void);
 void searchOrder(void);
 void updateOrder(void);
 void deleteOrder(void);
+void displayAnalytics(void);
 
 /* File Operations */
 int  saveToFile(void);
@@ -70,6 +84,7 @@ int  loadFromFile(void);
 void displayMenu(void);
 void displayWelcomeBanner(void);
 void displayOrderDetails(const Order *order);
+void promptOrderStatus(char *buffer, int maxLength);
 
 /* Utility Functions */
 void clearInputBuffer(void);
@@ -80,6 +95,11 @@ int  findOrderByID(int orderID);
 int  isValidOrderID(int orderID);
 void trimNewline(char *str);
 void pressEnterToContinue(void);
+int  equalsIgnoreCase(const char *a, const char *b);
+int  containsIgnoreCase(const char *haystack, const char *needle);
+void toLowerCopy(const char *src, char *dest, size_t destSize);
+int  mapStatusToIndex(const char *status);
+int  promptYesNo(const char *message);
 
 /* =============================================================================
  * MAIN FUNCTION
@@ -138,13 +158,15 @@ void displayMenu(void) {
         printf("|  [4]  Update Order                               |\n");
         printf("|  [5]  Delete Order                               |\n");
         printf("|  [6]  Save Orders to File                        |\n");
-        printf("|  [7]  Exit Application                           |\n");
+        printf("|  [7]  View Analytics Dashboard                   |\n");
+        printf("|  [8]  Exit Application                           |\n");
         printf("+--------------------------------------------------+\n");
         printf("   Total Orders in System: %d / %d\n", orderCount, MAX_ORDERS);
+        printf("   Pending Changes      : %s\n", hasUnsavedChanges ? "YES" : "NO");
         printf("+--------------------------------------------------+\n");
         
-        if (!readInteger("Enter your choice (1-7): ", &choice)) {
-            printf("\n[ERROR] Invalid input. Please enter a number between 1 and 7.\n");
+        if (!readInteger("Enter your choice (1-8): ", &choice)) {
+            printf("\n[ERROR] Invalid input. Please enter a number between 1 and 8.\n");
             continue;
         }
         
@@ -170,15 +192,21 @@ void displayMenu(void) {
                 }
                 break;
             case 7:
-                printf("\n[INFO] Saving orders before exit...\n");
-                saveToFile();
+                displayAnalytics();
+                break;
+            case 8:
+                if (hasUnsavedChanges) {
+                    if (promptYesNo("\n[WARN] Unsaved changes detected. Save before exit? (yes/no): ")) {
+                        saveToFile();
+                    }
+                }
                 printf("\n+--------------------------------------------------+\n");
                 printf("|  Thank you for using our system. Goodbye!        |\n");
                 printf("+--------------------------------------------------+\n\n");
                 running = 0;
                 break;
             default:
-                printf("\n[ERROR] Invalid choice. Please select an option between 1 and 7.\n");
+                printf("\n[ERROR] Invalid choice. Please select an option between 1 and 8.\n");
         }
     }
 }
@@ -200,6 +228,42 @@ void displayOrderDetails(const Order *order) {
     printf("| Total Amount  : $%-31.2f |\n", order->price * order->quantity);
     printf("| Status        : %-32s |\n", order->orderStatus);
     printf("+--------------------------------------------------+\n");
+}
+
+/**
+ * Prompts the user to select a valid order status.
+ */
+void promptOrderStatus(char *buffer, int maxLength) {
+    if (buffer == NULL || maxLength <= 0) {
+        return;
+    }
+
+    printf("\nAvailable Order Status Options:\n");
+    for (size_t i = 0; i < STATUS_OPTION_COUNT; i++) {
+        printf("  [%zu] %s\n", i + 1, STATUS_OPTIONS[i]);
+    }
+    printf("  [0] Enter custom status\n");
+
+    int selection;
+    if (readInteger("Select status (0 for custom): ", &selection)) {
+        if (selection == 0) {
+            readString("Enter Order Status: ", buffer, maxLength);
+        } else if (selection >= 1 && (size_t)selection <= STATUS_OPTION_COUNT) {
+            strncpy(buffer, STATUS_OPTIONS[selection - 1], maxLength - 1);
+            buffer[maxLength - 1] = '\0';
+            return;
+        } else {
+            printf("[WARN] Invalid selection. Please enter a custom status.\n");
+            readString("Enter Order Status: ", buffer, maxLength);
+        }
+    } else {
+        printf("[WARN] Invalid input detected. Please enter a custom status.\n");
+        readString("Enter Order Status: ", buffer, maxLength);
+    }
+
+    if (strlen(buffer) == 0) {
+        strcpy(buffer, STATUS_OPTIONS[0]);
+    }
 }
 
 /* =============================================================================
@@ -268,15 +332,12 @@ void addOrder(void) {
         return;
     }
     
-    readString("Enter Order Status (e.g., Pending, Shipped, Delivered): ", 
-               newOrder.orderStatus, MAX_STATUS_LENGTH);
-    if (strlen(newOrder.orderStatus) == 0) {
-        strcpy(newOrder.orderStatus, "Pending");
-    }
+    promptOrderStatus(newOrder.orderStatus, MAX_STATUS_LENGTH);
     
     /* Add order to array */
     orders[orderCount] = newOrder;
     orderCount++;
+    hasUnsavedChanges = true;
     
     printf("\n[SUCCESS] Order #%d added successfully!\n", newOrder.orderID);
     printf("[INFO] Total Amount: $%.2f\n", newOrder.price * newOrder.quantity);
@@ -312,6 +373,63 @@ void displayOrders(void) {
     printf("| Total Orders  : %-32d |\n", orderCount);
     printf("| Total Revenue : $%-31.2f |\n", totalRevenue);
     printf("+--------------------------------------------------+\n");
+}
+
+/**
+ * Provides high-level metrics to help operators understand performance.
+ */
+void displayAnalytics(void) {
+    printf("\n+--------------------------------------------------+\n");
+    printf("|              ANALYTICS DASHBOARD                |\n");
+    printf("+--------------------------------------------------+\n");
+
+    if (orderCount == 0) {
+        printf("\n[INFO] No orders available. Submit orders to unlock analytics.\n");
+        return;
+    }
+
+    float totalRevenue = 0.0f;
+    float highestOrderValue = -1.0f;
+    int highestIndex = -1;
+    int statusCounts[STATUS_OPTION_COUNT + 1];
+    memset(statusCounts, 0, sizeof(statusCounts));
+
+    for (int i = 0; i < orderCount; i++) {
+        float currentValue = orders[i].price * orders[i].quantity;
+        totalRevenue += currentValue;
+
+        if (currentValue > highestOrderValue) {
+            highestOrderValue = currentValue;
+            highestIndex = i;
+        }
+
+        int statusIndex = mapStatusToIndex(orders[i].orderStatus);
+        if (statusIndex < 0 || statusIndex > (int)STATUS_OPTION_COUNT) {
+            statusIndex = (int)STATUS_OPTION_COUNT;
+        }
+        statusCounts[statusIndex]++;
+    }
+
+    float averageOrderValue = totalRevenue / orderCount;
+
+    printf("\nKey Metrics:\n");
+    printf("  Total Orders        : %d\n", orderCount);
+    printf("  Total Revenue       : $%.2f\n", totalRevenue);
+    printf("  Average Order Value : $%.2f\n", averageOrderValue);
+    printf("  Highest Order Value : $%.2f\n", highestOrderValue);
+
+    printf("\nStatus Breakdown:\n");
+    for (size_t i = 0; i < STATUS_OPTION_COUNT; i++) {
+        printf("  %-12s : %d\n", STATUS_OPTIONS[i], statusCounts[i]);
+    }
+    if (statusCounts[STATUS_OPTION_COUNT] > 0) {
+        printf("  Custom/Other : %d\n", statusCounts[STATUS_OPTION_COUNT]);
+    }
+
+    if (highestIndex != -1) {
+        printf("\nTop Performing Order:\n");
+        displayOrderDetails(&orders[highestIndex]);
+    }
 }
 
 /**
@@ -357,13 +475,17 @@ void searchOrder(void) {
         /* Search by Customer Name */
         char searchName[MAX_NAME_LENGTH];
         readString("Enter Customer Name to search: ", searchName, MAX_NAME_LENGTH);
+
+        if (strlen(searchName) == 0) {
+            printf("\n[ERROR] Customer name cannot be empty.\n");
+            return;
+        }
         
         int foundCount = 0;
         printf("\n[INFO] Search results for \"%s\":\n", searchName);
         
         for (int i = 0; i < orderCount; i++) {
-            /* Case-insensitive partial match */
-            if (strstr(orders[i].customerName, searchName) != NULL) {
+            if (containsIgnoreCase(orders[i].customerName, searchName)) {
                 displayOrderDetails(&orders[i]);
                 foundCount++;
             }
@@ -441,14 +563,14 @@ void updateOrder(void) {
     
     /* Update Status */
     printf("Current Status: %s\n", orders[index].orderStatus);
-    readString("New Status: ", tempStr, MAX_STATUS_LENGTH);
-    if (strlen(tempStr) > 0) {
-        strcpy(orders[index].orderStatus, tempStr);
+    if (promptYesNo("Update status? (yes/no): ")) {
+        promptOrderStatus(orders[index].orderStatus, MAX_STATUS_LENGTH);
     }
     
     printf("\n[SUCCESS] Order #%d updated successfully!\n", updateID);
     printf("\n[INFO] Updated order details:\n");
     displayOrderDetails(&orders[index]);
+    hasUnsavedChanges = true;
 }
 
 /**
@@ -479,15 +601,13 @@ void deleteOrder(void) {
     printf("\n[WARNING] You are about to delete the following order:\n");
     displayOrderDetails(&orders[index]);
     
-    char confirm[10];
-    readString("Are you sure? (yes/no): ", confirm, 10);
-    
-    if (strcmp(confirm, "yes") == 0 || strcmp(confirm, "y") == 0) {
+    if (promptYesNo("Are you sure you want to delete this order? (yes/no): ")) {
         /* Shift remaining orders */
         for (int i = index; i < orderCount - 1; i++) {
             orders[i] = orders[i + 1];
         }
         orderCount--;
+        hasUnsavedChanges = true;
         
         printf("\n[SUCCESS] Order #%d deleted successfully.\n", deleteID);
     } else {
@@ -529,6 +649,7 @@ int saveToFile(void) {
     }
     
     fclose(file);
+    hasUnsavedChanges = false;
     printf("[INFO] %d order(s) saved to %s\n", orderCount, DATA_FILE);
     return 1;
 }
@@ -571,6 +692,7 @@ int loadFromFile(void) {
     }
     
     fclose(file);
+    hasUnsavedChanges = false;
     return loadedCount;
 }
 
@@ -676,4 +798,84 @@ void trimNewline(char *str) {
 void pressEnterToContinue(void) {
     printf("\nPress Enter to continue...");
     clearInputBuffer();
+}
+
+/**
+ * Case-insensitive string comparison.
+ */
+int equalsIgnoreCase(const char *a, const char *b) {
+    if (a == NULL || b == NULL) {
+        return 0;
+    }
+    while (*a != '\0' && *b != '\0') {
+        if (tolower((unsigned char)*a) != tolower((unsigned char)*b)) {
+            return 0;
+        }
+        a++;
+        b++;
+    }
+    return (*a == '\0' && *b == '\0');
+}
+
+/**
+ * Converts a string to lowercase safely.
+ */
+void toLowerCopy(const char *src, char *dest, size_t destSize) {
+    if (src == NULL || dest == NULL || destSize == 0) {
+        return;
+    }
+    size_t i = 0;
+    for (; i < destSize - 1 && src[i] != '\0'; i++) {
+        dest[i] = (char)tolower((unsigned char)src[i]);
+    }
+    dest[i] = '\0';
+}
+
+/**
+ * Checks if haystack contains needle, case-insensitive.
+ */
+int containsIgnoreCase(const char *haystack, const char *needle) {
+    if (haystack == NULL || needle == NULL) {
+        return 0;
+    }
+
+    char haystackLower[TEMP_BUFFER_LENGTH];
+    char needleLower[TEMP_BUFFER_LENGTH];
+    toLowerCopy(haystack, haystackLower, sizeof(haystackLower));
+    toLowerCopy(needle, needleLower, sizeof(needleLower));
+
+    if (strlen(needleLower) == 0) {
+        return 0;
+    }
+
+    return strstr(haystackLower, needleLower) != NULL;
+}
+
+/**
+ * Maps a status string to the index of the predefined status array.
+ */
+int mapStatusToIndex(const char *status) {
+    if (status == NULL) {
+        return (int)STATUS_OPTION_COUNT;
+    }
+    for (size_t i = 0; i < STATUS_OPTION_COUNT; i++) {
+        if (equalsIgnoreCase(status, STATUS_OPTIONS[i])) {
+            return (int)i;
+        }
+    }
+    return (int)STATUS_OPTION_COUNT;
+}
+
+/**
+ * Prompts the user for a yes/no response.
+ */
+int promptYesNo(const char *message) {
+    char response[16];
+    readString(message, response, (int)sizeof(response));
+    char normalized[16];
+    toLowerCopy(response, normalized, sizeof(normalized));
+    if (normalized[0] == 'y') {
+        return 1;
+    }
+    return 0;
 }
